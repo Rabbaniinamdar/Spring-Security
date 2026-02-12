@@ -950,3 +950,369 @@ Controller executes
 
 
 
+# 🔵 ① Complete JWT Authentication Flow in Spring Security (Beginner to Advanced Understanding)
+
+Now this diagram represents something very important — **JWT-based authentication flow** in Spring Security.
+
+Unlike form login (session-based authentication), JWT works in a **stateless** way. That means the server does not store session data. Instead, every request must carry authentication information inside a token.
+
+Let’s understand everything from the beginning in a connected and clear way.
+
+---
+
+# 🟢 ② Two Types of Requests in JWT System
+
+From your diagram, you can see two flows:
+
+1. **Login Request (`/login`)**
+2. **Secured Requests (All other API calls)**
+
+These two flows behave differently.
+
+Login request is used to generate a token.
+Secured requests are used to validate that token.
+
+---
+
+# 🟣 ③ Step 1 – Login Request Flow (`/login`)
+
+When a user sends:
+
+```
+POST /login
+{
+   "username": "rabbani",
+   "password": "1234"
+}
+```
+
+This request is considered a **non-secured authentication request**.
+
+So it goes like this:
+
+```
+HTTP Request
+   ↓
+Security Filters
+   ↓
+Login Controller
+```
+
+Inside the Login Controller, you manually authenticate using:
+
+```
+AuthenticationManager
+```
+
+Example:
+
+```java
+@RestController
+@RequestMapping("/auth")
+public class AuthController {
+
+    @Autowired
+    private AuthenticationManager authenticationManager;
+
+    @Autowired
+    private JwtService jwtService;
+
+    @PostMapping("/login")
+    public String login(@RequestBody AuthRequest request) {
+
+        Authentication authentication =
+                authenticationManager.authenticate(
+                        new UsernamePasswordAuthenticationToken(
+                                request.getUsername(),
+                                request.getPassword()
+                        )
+                );
+
+        if (authentication.isAuthenticated()) {
+            return jwtService.generateToken(request.getUsername());
+        }
+
+        throw new RuntimeException("Invalid credentials");
+    }
+}
+```
+
+Now internally what happens?
+
+---
+
+# 🟡 ④ AuthenticationManager During Login
+
+When you call:
+
+```java
+authenticationManager.authenticate(...)
+```
+
+Spring does the following:
+
+* ProviderManager loops through AuthenticationProviders
+* DaoAuthenticationProvider is selected
+* UserDetailsService loads user
+* PasswordEncoder verifies password
+* If correct → authenticated object returned
+
+Once authentication is successful:
+
+You generate a JWT token and return it to the client.
+
+Example token:
+
+```
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+Now the client stores this token (usually in localStorage or memory).
+
+---
+
+# 🟠 ⑤ Step 2 – Secured API Request Flow (With JWT)
+
+Now suppose the client calls:
+
+```
+GET /api/dashboard
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+This is a secured request.
+
+Now the request goes through:
+
+```
+HTTP Request
+   ↓
+Security Filters
+   ↓
+Internal Spring Security Filter Chain
+   ↓
+JwtAuthFilter
+```
+
+This is where JWT magic happens.
+
+---
+
+# 🔵 ⑥ JwtAuthFilter – The Heart of JWT Authentication
+
+This filter runs **before UsernamePasswordAuthenticationFilter**.
+
+Its job is:
+
+1. Extract Authorization header
+2. Extract token
+3. Validate token
+4. Extract username from token
+5. Load user from database
+6. Set authentication in SecurityContextHolder
+
+Example:
+
+```java
+@Component
+public class JwtAuthFilter extends OncePerRequestFilter {
+
+    @Autowired
+    private JwtService jwtService;
+
+    @Autowired
+    private UserDetailsService userDetailsService;
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request,
+                                    HttpServletResponse response,
+                                    FilterChain filterChain)
+                                    throws ServletException, IOException {
+
+        String authHeader = request.getHeader("Authorization");
+
+        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+        String token = authHeader.substring(7);
+        String username = jwtService.extractUsername(token);
+
+        if (username != null &&
+            SecurityContextHolder.getContext().getAuthentication() == null) {
+
+            UserDetails userDetails =
+                    userDetailsService.loadUserByUsername(username);
+
+            if (jwtService.validateToken(token, userDetails)) {
+
+                UsernamePasswordAuthenticationToken authToken =
+                        new UsernamePasswordAuthenticationToken(
+                                userDetails,
+                                null,
+                                userDetails.getAuthorities()
+                        );
+
+                SecurityContextHolder.getContext()
+                        .setAuthentication(authToken);
+            }
+        }
+
+        filterChain.doFilter(request, response);
+    }
+}
+```
+
+This is exactly what your diagram shows:
+
+Fetch token → Extract user → Validate → Add to SecurityContextHolder.
+
+---
+
+# 🟣 ⑦ Why SecurityContextHolder Is Important Here?
+
+Spring Security does not check JWT automatically.
+
+It only checks:
+
+```
+Is there an Authentication object in SecurityContextHolder?
+```
+
+If yes → request is authenticated
+If no → 401 Unauthorized
+
+That’s why your JwtAuthFilter must set authentication manually.
+
+---
+
+# 🟡 ⑧ UsernamePasswordAuthenticationFilter in JWT Flow
+
+In your diagram, you see:
+
+```
+UsernamePasswordAuthenticationFilter checks authentication in the SecurityContextHolder and continues the chain
+```
+
+Exactly.
+
+If JwtAuthFilter already set authentication, then UsernamePasswordAuthenticationFilter will see that authentication exists and simply allow the request to proceed.
+
+Then request reaches:
+
+```
+DispatcherServlet → Controller
+```
+
+Inside controller, you can get logged-in user:
+
+```java
+@GetMapping("/dashboard")
+public String dashboard(Authentication authentication) {
+    return "Welcome " + authentication.getName();
+}
+```
+
+---
+
+# 🟠 ⑨ JWT Service Example (Token Generation & Validation)
+
+Here’s a simple example:
+
+```java
+@Service
+public class JwtService {
+
+    private final String SECRET = "mysecretkey";
+
+    public String generateToken(String username) {
+        return Jwts.builder()
+                .setSubject(username)
+                .setIssuedAt(new Date())
+                .setExpiration(new Date(System.currentTimeMillis() + 1000 * 60 * 60))
+                .signWith(SignatureAlgorithm.HS256, SECRET)
+                .compact();
+    }
+
+    public String extractUsername(String token) {
+        return Jwts.parser()
+                .setSigningKey(SECRET)
+                .parseClaimsJws(token)
+                .getBody()
+                .getSubject();
+    }
+
+    public boolean validateToken(String token, UserDetails userDetails) {
+        String username = extractUsername(token);
+        return username.equals(userDetails.getUsername());
+    }
+}
+```
+
+---
+
+# 🔴 ⑩ Why JWT Is Stateless?
+
+In session-based authentication:
+
+* Server stores session in memory
+* Client sends JSESSIONID cookie
+
+In JWT:
+
+* Server does NOT store anything
+* Client sends token every time
+* Token contains username & expiry
+* Server validates token signature
+
+That’s why it scales better in microservices.
+
+---
+
+# 🔵 ⑪ Complete JWT Flow from Your Diagram (Connected Version)
+```
+Login Flow:
+
+Client → `/login`
+↓
+Login Controller
+↓
+AuthenticationManager
+↓
+UserDetailsService + PasswordEncoder
+↓
+Generate JWT
+↓
+Return JWT to client
+
+Secured Request Flow:
+
+Client sends token in header
+↓
+Security Filter Chain
+↓
+JwtAuthFilter
+↓
+Extract token
+↓
+Extract username
+↓
+Validate token
+↓
+Load user
+↓
+Set Authentication in SecurityContextHolder
+↓
+Continue filter chain
+↓
+DispatcherServlet
+↓
+Controller
+↓
+Get user from SecurityContextHolder
+```
+That is the complete JWT architecture in Spring Security.
+
+---
+
